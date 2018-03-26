@@ -1,0 +1,310 @@
+---
+title: "DATA 621 - Homework 1"
+author: "Joshua Sturm"
+date: "February 26, 2018"
+output:
+  pdf_document:
+    keep_tex: yes
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    code_folding: show
+    toc: yes
+    toc_float: yes
+    smart: no
+always_allow_html: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, collapse = T)
+```
+
+# Introduction
+
+In this homework assignment, you will explore, analyze and model a data set containing approximately 2200 records. Each record represents a professional baseball team from the years 1871 to 2006 inclusive. Each record has the performance of the team for the given year, with all of the statistics adjusted to match the performance of a 162 game season. Your objective is to build a multiple linear regression model on the training data to predict the number of wins for the team. 
+
+# 1. Data Exploration
+
+## 1.1 Load packages
+```{r load-packages, cache = F}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(corrplot)
+library(Hmisc)
+library(gridExtra)
+```
+
+## 1.2 Read in data
+```{r load-data, cache = T}
+mb.ev <- read.csv("moneyball-evaluation-data.csv")
+mb.tr <- read.csv("moneyball-training-data.csv")
+```
+
+## 1.2.1 Create data dictionary
+```{r data-dictionary, cache = T}
+defs <- c("Number of wins", "Base hits by batters (1B, 2B, 3B, HR)", "Doubles by batters (2B)", "Triples by batters (3B)",
+          "Homeruns by batters (4B)", "Walks by batters",  "Strikeouts by batter", "Stolen bases", "Caught stealing",
+          "Batters hit by pitch (free base)", "Hits allowed", "Homeruns allowed", "Walks allowed", "Strikeouts by pitchers",            "Errors", "Double plays")
+mb.dict <- data.frame(names(mb.tr[,-1]), defs, "Outcome variable", stringsAsFactors = F)
+mb.dict[c(2:6, 8, 10, 12, 14, 16), 3] <- "Positive impact on wins"
+mb.dict[c(7, 9, 11, 13, 15), 3] <- "Negative impact on wins"
+names(mb.dict) <- c("Variable Name", "Definition", "Theoretical effect")
+kable(mb.dict, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down"))
+```
+
+## 1.3 Basic variable statistics
+```{r prelim-exploration, cache = T}
+#mb.tr <- mb.tr[, -c(1, 10, 11)] # Remove INDEX, BASERUN_CS, and BATTING_HBP columns
+names(mb.tr) <- gsub("TEAM_", "", names(mb.tr)) # Shorten var names by removing common term 'TEAM_'
+mb.desc <- psych::describe(mb.tr) 
+mb.desc <- mb.desc %>%
+  select(-c(vars, trimmed, mad, range)) # Remove irrelevant columns
+kable(mb.desc, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down"))
+```
+
+The training data has `r dim(mb.tr)[[1]]` cases, with `r dim(mb.tr)[[2]]` variables. 
+
+`r names(mb.tr)[1]`, as its name suggest, is simply an index, which we can remove. 
+
+`r names(mb.tr)[2]` is our response variable, leaving the remaining `r dim(mb.tr)[2] - 2` variables as our predictors.
+
+Right off the bat `:)`, we notice the data has some oddities. Some variables are relatively sparse, particularly `r names(mb.tr)[10]` and `r names(mb.tr)[11]`. The latter two have so many missing cases, `r sum(is.na(mb.tr$BASERUN_CS))` (`r (round(sum(is.na(mb.tr$BASERUN_CS)) / nrow(mb.tr), 2))*100`%) and `r sum(is.na(mb.tr$BATTING_HBP))` (`r (round(sum(is.na(mb.tr$BATTING_HBP)) / nrow(mb.tr), 2))*100`%) respectively, that it would be unreasonable to include them for use in any meaningful statistical model, so they will require further examining in part 3.
+
+## 1.4 Summary Graphs
+
+### 1.4.1 Boxplot
+```{r summary-graph-boxplot, cache = T}
+mb.tr.bp <- mb.tr %>%
+  gather()
+summary.boxplot <- ggplot(mb.tr.bp, aes(x = key, y = value)) +
+  labs(x = "variable", title = "Moneyball Training Boxplot") +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 1) +
+  coord_flip()
+summary.boxplot
+```
+
+### 1.4.2 Histogram
+```{r summar-graph-hist, cache = T}
+mb.tr.hist <- ggplot(data = mb.tr.bp, mapping = aes(x = value)) + 
+  geom_histogram(bins = 10) + facet_wrap(~key, scales = 'free_x')
+mb.tr.hist
+```
+
+
+### 1.5 Correlation
+```{r summary-correlation, cache = T}
+mb.tr.corr <- mb.tr %>% na.omit()
+corrplot(cor(mb.tr.corr), method = "color", type = "lower")
+```
+
+# 2. Data Preparation
+
+## 2.1 Adding and removing variables
+
+From the above graphs, we notice a few things. Firstly, our response variable, `r names(mb.tr)[1]`, is approximately normal.
+
+Many of the predicting variables, however, are far from normal. I'll address this in a few ways.
+Firstly, as can be seen in the data dictionary, there are entries for `doubles`, `triples`, `homeruns`, and an all-encompassing `base hits`. Notably missing is a variable for singles. I can create my own by simply taking the difference between `base hits` and all three present variables, i.e. `singles =` `base hits` - `doubles` - `triples` - `homeruns`. Once I've created my `singles` variable, I'll need to remove `base hits` from the model to prevent multicollinearity.
+
+Another issue is the strong correlation between `PITCHING_HR` and `BATTING_HR` (`r round(cor(mb.tr$PITCHING_HR, mb.tr$BATTING_HR),2)*100`%!), which makes sense - they're essentially the same thing from opposite viewpoints. Since these variables are practically the same as each other, we can safely drop one of them.
+
+As we mentioned in part 1, we're removing the two variables with a significant amount of missing data - `BATTING_HBP` and `BASERUN_CS`.
+
+Additionally, `r names(mb.tr)[17]` is missing 12.5% of its total cases, so we will drop it.
+The remaining variables have less than 6% cases missing, so we'll attempt to model with those in place.
+
+```{r data-prep-one}
+mb2 <- mb.tr %>%
+  mutate(BATTING_1B = BATTING_H - BATTING_2B - BATTING_3B - BATTING_HR) %>%
+  select(-c(1, 3, 10, 11, 13, 17))
+```
+
+## 2.2 Missing data imputation
+
+While we removed the variables that were missing a large portion of data, we're still left with others that have NA values.
+
+`r names(mb2)[6]`, `r names(mb2)[7]`, and `r names(mb2)[10]` have an average of ~ 112 missing cases.
+
+After reading up on dealing with missing data in linear regression, it seems that imputation by means of regression is preferred over a basic statistical method such as mean, for example. To handle this, I'll make use of the `Hmisc` package.
+
+```{r imputation}
+mb.imputed <- aregImpute(~ BATTING_SO + BASERUN_SB + PITCHING_SO, data = mb2, n.impute = 10, pr = F)
+mb.imputed <- impute.transcan(mb.imputed, data=mb2, imputation=1, list.out=TRUE, pr=FALSE, check=FALSE)
+mb.imputed <- as.data.frame(do.call(cbind, mb.imputed))
+
+mb3 <- mb2 %>%
+  select(-6, 7, 10) %>%
+  mutate(BATTING_SO = mb.imputed[, 1],
+         BASERUN_SB = mb.imputed[, 2],
+         PITCHING_SO = mb.imputed[, 3])
+```
+
+## 2.3 Outliers
+
+I'll begin by printing out the range for each variable, to see see if I can identify any outliers based on the variable's extremes.
+
+```{r mb3-range}
+mb3.range <- sapply(mb3, range)
+kable(mb3.range, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options =  c("striped", "scale_down"))
+```
+
+When reviewing this table, together with the plots generated in part 1, one can instantly notice oddities in the data.
+Going in order, I'll begin with `BASERUN_SB`. The team with the most stolen bases in a season was the 1887 St. Louis Cardinals with 581. I'll remove the `sum(mb3$BASERUN_SB > 581)` rows which are greater than 581. 
+
+MLB statistics show the 1915 Philadelphia Athletics to have the most walks in a season, with 827. That works out to ~859 in a full 162-game season. Interestingly, removing the outliers for this variable actually makes the model _less_ accurate; nevertheless, in the interest of staying consistent, I will discard any row with a value greater than 859.
+
+Next is `PITCHING_H`. I couldn't find any data on most hits allowed, but according to [this list on wikipedia](https://en.wikipedia.org/wiki/List_of_Major_League_Baseball_hit_records), the most hits by a team in a season was 1,783, by the Phillies in 1930. This raises questions about the original dataset's max of `BATTING_H` of 2,554. If a team allowed 30,132 hits in a single season, that's an average of 186 hits per game...which is impossible. The record of 1,783 comes out to 11 hits per game. If they played a full 162-game season, it would come out to 1,874.  
+
+Since such a large portion of this variable is in outlier territory, it leads me to believe that it would be a mistake to discard the whole thing. However, I'm not exactly sure how to deal with it; statistical transformations, such as square root or log, have done little to rectify the issue. I will resort to removing the `r sum(mb3[, 'PITCHING_H'] > 1874)` rows with values larger than 1,874.
+
+The next variable of concern is `PITCHING_SO`. According to official statistics kept by MLB (mlb.com), the team with the most (pitching) strikeouts in a season was the 2017 Cleveland Indians, with a staggering total of 1,614 strikeouts. Our data, however, has a max of 19278, which is several orders of magnitude larger than reality. So I will 
+remove the `r sum(mb3[, 'PITCHING_SO'] > 1614)` rows larger than 1,614.
+
+The third variable of concern is `FIELDING_E`. The team with the most fielding errors in a season was the ~~1886 Washington Nationals, with a total of 867~~ 1883 Baltimore Orioles, with 517. Since there were only 98 games played then, that works out to ~854 in a full 162-game season. Thus, I will remove any row with more errors than 854. This is also an interesting variable, in that removing the outliers lowers the model's accuracy.
+
+```{r outliers}
+mb3 <- mb3 %>%
+  filter(., BASERUN_SB <= 581, PITCHING_H <= 1874, PITCHING_BB <= 859, PITCHING_SO <= 1614, FIELDING_E <= 854)
+```
+
+# 3. Build models
+
+## 3.1 Model 1
+
+I guess it makes the most sense to begin with a full model with all (non-transformed) variables included.
+
+```{r model-one}
+model1 <- lm(TARGET_WINS ~ ., data = mb.tr)
+summary(model1)
+```
+
+Not a very robust model; many insignificant variables, a low $R^2$ value, and a high AIC and BIC.
+There are also a lot of weird coefficients in this model. Triples, *home runs*, walks, (pitching) strikeouts, and double plays all have negative coefficients, meaning they are negatively correlated with the model.
+
+## 3.2 Model 2
+
+The second model I'll try contains the dataset with the added and removed variables, but none of them were transformed.
+
+```{r model-two}
+model2 <- lm(TARGET_WINS ~ ., data = mb2)
+summary(model2)
+```
+
+This model has more sensible coefficients, even though it scored lower ($R^2$).
+
+## 3.3 Model 3
+
+The third model will be the modified dataset with all the transformed variables.
+
+```{r model-three}
+model3 <- lm(TARGET_WINS ~ ., data = mb3)
+summary(model3)
+```
+
+The transformed model further improves on the second, with respect to the coefficients. `PITCHING_H` is positive instead of negative, while `BATTING_1B` and `BATTING_2B` are negative.
+
+# 4. Model selection
+
+To ensure uniformity between the datasets, I performed the same transformations on the evaluation set.
+
+```{r clean-evaluation-data}
+names(mb.ev) <- gsub("TEAM_", "", names(mb.ev))
+mb.ev <- mb.ev %>%
+   mutate(BATTING_1B = BATTING_H - BATTING_2B - BATTING_3B - BATTING_HR) %>%
+   select(-c(1, 2, 9, 10, 12, 16))
+
+mb.imputed2 <- aregImpute(~ BATTING_SO + BASERUN_SB + PITCHING_SO, data = mb.ev, n.impute = 10, pr = F)
+mb.imputed2 <- impute.transcan(mb.imputed2, data=mb.ev, imputation=1, list.out=TRUE, pr=FALSE, check=FALSE)
+mb.imputed2 <- as.data.frame(do.call(cbind, mb.imputed2))
+
+mb.ev <- mb.ev %>%
+  select(-5, -6, -9) %>%
+  mutate(BATTING_SO = mb.imputed2[, 1],
+         BASERUN_SB = mb.imputed2[, 2],
+         PITCHING_SO = mb.imputed2[, 3])
+
+mb.ev <- mb.ev %>%
+  filter(., BASERUN_SB <= 581, PITCHING_H <= 1874, PITCHING_BB <= 859, PITCHING_SO <= 1614, FIELDING_E <= 854)
+```
+
+Here is a sample of the model's results:
+
+```{r predict}
+predicted.wins <- predict(model3, mb.ev)
+
+results.df <- data.frame(cbind(actuals = mb3$TARGET_WINS[1:227], predicted = predicted.wins))
+
+results.df <- results.df %>%
+  mutate(error = results.df$predicted - results.df$actuals)
+results.df <- results.df %>%
+  mutate(percerror = paste0(round(results.df$error/results.df$actuals*100,2),"%")) #%>%
+  #na.omit()
+
+kable(head(results.df), format = "latex", booktabs = T) %>%
+  kable_styling(latex_options =  c("striped", "scale_down"))
+```
+
+```{r mean-error}
+sprintf("The mean error is: %s", mean(results.df$error))
+```
+
+```{r predict-plots}
+rp1 <- ggplot(model3, aes(.fitted, .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_smooth(se = FALSE) +
+  labs(title = "Residuals vs Fitted")
+
+rp2 <- ggplot(model3, aes(.fitted, .stdresid)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_smooth(se = FALSE)
+
+rp3 <- plot(model3, which = 2)
+
+rp4 <- ggplot(model3, aes(.fitted, sqrt(abs(.stdresid)))) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  labs(title = "Scale-Location")
+
+rp5 <- ggplot(model3, aes(seq_along(.cooksd), .cooksd)) +
+  geom_col() +
+  ylim(0, 0.0075) +
+  labs(title = "Cook's Distance")
+
+rp6 <- ggplot(model3, aes(.hat, .stdresid)) +
+  geom_point(aes(size = .cooksd)) +
+  geom_smooth(se = FALSE, size = 0.5) +
+  labs(title = "Residuals vs Leverage")
+
+rp7 <- ggplot(model3, aes(.hat, .cooksd)) +
+  geom_vline(xintercept = 0, colour = NA) +
+  geom_abline(slope = seq(0, 3, by = 0.5), colour = "white") +
+  geom_smooth(se = FALSE) +
+  geom_point() +
+  labs(title = "Cook's distance vs Leverage")
+
+rp2
+grid.arrange(rp1, rp2, rp4, rp5, rp6, rp7, ncol = 2)
+```
+
+# 5. Closing words
+
+I picked the third model, because I felt the data was the most honest - that is, it had the fewest outliers, and was closer to what it was meant to represent. The full model had a higher $R^2$, but that could be attributed to collinearity amongst the variables. The model is not perfect, and I likely would not use it in practice, but, given the many issues with the data, I believe I optimized it as best I could.
+
+# References
+
+* https://www.analyticsvidhya.com/blog/2016/03/tutorial-powerful-packages-imputing-missing-values/
+* https://www.baseball-reference.com
+* https://www.baseball-almanac.com
+* https://www.mlb.com
+* https://sports.stackexchange.com/questions/16246/what-is-the-mlb-record-for-most-errors-by-one-team-in-one-season-during-the-mode
+* http://r-statistics.co/Linear-Regression.html
+* http://ggplot2.tidyverse.org/reference/fortify.lm.html
