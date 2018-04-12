@@ -3,15 +3,15 @@ title: "DATA 621 - Homework 1"
 author: "Joshua Sturm"
 date: "February 26, 2018"
 output:
-  pdf_document:
-    keep_tex: yes
   html_document:
-    highlight: pygments
-    theme: cerulean
+    highlight: default
+    theme: sandstone
     code_folding: show
     toc: yes
     toc_float: yes
     smart: no
+  pdf_document:
+    keep_tex: yes
 always_allow_html: yes
 editor_options: 
   chunk_output_type: console
