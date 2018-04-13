@@ -11,3 +11,6 @@ forcats
 knitr
 kableExtra
 corrplot
+lattice
+caret
+pROC

@@ -3,6 +3,7 @@ title: "DATA 621 - Homework 3"
 author: "Joshua Sturm"
 date: "04/02/2018"
 output:
+  github_document:
   pdf_document:
     keep_tex: yes
   html_document:
@@ -12,13 +13,12 @@ output:
     toc: yes
     toc_float: yes
     smart: yes
-  github_document:
 always_allow_html: yes
 editor_options: 
   chunk_output_type: console
 ---
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = F, warning = F, message = F, collapse = T)
+knitr::opts_chunk$set(echo = F, warning = F, message = F, collapse = T, cache = T)
 ```
 
 # Introduction
@@ -36,13 +36,13 @@ library(caret)
 ```
 
 ## 1.2 Read in data
-```{r import-data, cache = T}
+```{r import-data}
 crime <- read.csv("crime-evaluation-data_modified.csv", stringsAsFactors = F)
 crime.training <- read.csv("crime-training-data_modified.csv", stringsAsFactors = F)
 ```
 
 ### 1.2.1 Create data dictionary
-```{r data-dictionary, cache = T}
+```{r data-dictionary}
 defs <- c("proportion of residential land zoned for large lots (over 25000 square feet)",
           "proportion of non-retail business   acres per suburb", 
           "a dummy var. for whether the suburb borders the Charles River (1) or not (0)", 
@@ -57,13 +57,13 @@ crime.dict <- data.frame(names(crime), defs, "Outcome variable", stringsAsFactor
 names(crime.dict) <- c("Variable Name", "Definition")
 ```
 
-```{r print-dictionary, cache = T}
+```{r print-dictionary}
 kable(crime.dict, format = "latex", booktabs = T) %>%
   kable_styling(latex_options = c("striped", "scale_down"))
 ```
 
 ## 1.3 Basic dataset statistics
-```{r describe, cache = T}
+```{r describe}
 crime.desc <- psych::describe(crime.training)
 
 kable(crime.desc, format = "latex", booktabs = T) %>%
@@ -72,7 +72,7 @@ kable(crime.desc, format = "latex", booktabs = T) %>%
 
 The training data has `r dim(crime.training)[[1]]` cases, with `r dim(crime.training)[[2]]` predictor variables. Each case represents a neighbourhood in Boston. Our large sample size satisfies one of the requirements to fit our data to a logistic model.
 
-```{r check-for-missing, eval = F, cache = T}
+```{r check-for-missing, eval = F}
 any(is.na(crime.training))
 ```
 
@@ -81,7 +81,7 @@ Amazingly, there is not a single `NA` in the entire dataset, which will make our
 ## 1.4 Summary Graphs
 
 ### 1.4.1 Boxplot
-```{r summary-boxplot, cache = T}
+```{r summary-boxplot}
 crime.training.bp <- crime.training %>%
   select(-target) %>%
   gather()
@@ -95,7 +95,7 @@ Aside from `zn`, this dataset doesn't have too many outliers.
 
 ### 1.4.2 Histogram
 
-```{r summary-histogram, cache = T}
+```{r summary-histogram}
 crime.training.hist <- ggplot(data = crime.training.bp, mapping = aes(x = value)) + 
   geom_histogram(bins = 10) + 
   facet_wrap(~key, scales = 'free_x')
@@ -108,16 +108,16 @@ We can see some variables, `age`, `chas`, `rad`, `zn`, in particular, are strong
 
 #### 1.4.3.1 Correlation Heatmap
 
-```{r summary-correlation-heatmap, cache = T}
-crime.training.corr <- crime.training %>%
+```{r summary-correlation-heatmap}
+crime.training.corr <- crime.training #%>%
   #select(-target) %>%
-  na.omit()
+  #na.omit()
 corrplot(cor(crime.training.corr), method = "color", type = "lower")
 ```
 
 #### 1.4.3.2 Correlation (with response) table
 
-```{r summary-correlation-table, cache = T}
+```{r summary-correlation-table}
 # apply(crime.training[, -13], 2, cor.test, crime.training$target)
 
 corp <- apply(crime.training[, -13], 2, function(x) cor.test(x, y=crime.training$target)$p.value)
@@ -139,7 +139,7 @@ As noted earlier, the dataset is remarkably whole, so we may proceed without wor
 As can be seen in the distribution plots in [section 1.4.2][1.4.2 Histogram], many of the predictor variables are not normally distributed. However, since logistic regression makes no assumptions, including the normality of the variables, we can safely skip this step, and keep the variables as they are.
 
 ## 2.3 Add or Remove Variables
-As mentioned before, we'll consider removing two variables for one of our models. `chas`, due to it's low correlation with any of the other variables, and either `rad` or `tax`, due to high collinearity between the two.
+As mentioned before, we'll consider removing two variables for one of our models. `chas`, due to it's low correlation with any of the other variables, and either `rad` or `tax`, due to high collinearity between the two. Since `rad` has a higher correlation with the `target` variable tham `tax` does, we'll drop the latter from one of our models.
 
 Other than the variables mentioned above, I don't see any reason to remove any variables. Furthermore, there isn't enough implicit information from which we could possibly derive new variables.
 
@@ -171,7 +171,7 @@ Note that I will not be using any sort of 'automatic' model selection, e.g. step
 ## 3.1 Model 1
 My first model will use the original dataset as is, without any variable changes. This will serve as a sort of benchmark with which to gauge the effectiveness of our changes.
 
-```{r model-one, cache = T}
+```{r model-one}
 model1 <- glm(formula = target ~ .,
               family = binomial(link = "logit"),
               data = crime.training)
@@ -183,7 +183,7 @@ There are several variables that are not significant to the model (i.e. $P > 0.0
 
 `zn`, `indus`, `rm`, and `tax` are all negatively correlated to the `target` variable, meaning an increase in any of these is correlated with a lower occurence of crime.
 
-```{r mod-one-coeff, cache = T}
+```{r mod-one-coeff}
 m1coef <- round(model1$coefficients[-1], 4)
 m1e <- c("More large homes would indicate a wealthier neighbourhood (unless zn is referring to apartment buildings)", "More likely to be a suburban (rather than urban) neighbourhood", "I'm not familiar with the Boston area", "Higher pollution could be due to industry or a poorly-funded area, both of which attract crime", "More rooms means a larger home, which would mean a wealthier neighbourhood", "Older units are more likely to be occupied by lower-income residents, and lower-income neighbourhoods are more likely to have crime", "Neighbourhoods farther away from employment centers have higher crime, possibly due to unemployment", "Access to highways might indicate a more urban neighbourhood, which tend to have higher crime", "This one is unclear. Higher tax rate could be due to size of unit, or overall high tax rate for that area", "Higher ratio is more likely in poorly-funded districts, which tend to have higher crime", "Lower income neighbourhoods tend to have more crime", "Surprising that neighbourhoods with higher-valued homes had more crime")
 kable(cbind(m1coef, m1e), format = "latex", booktabs = T, col.names = c("Coefficient", "Possible Reasoning")) %>%
@@ -204,7 +204,7 @@ anova(model1, test = "Chisq")
 ## 3.2 Model 2
 For our second model, we'll remove the variables deemed insignificant in model 1.
 
-```{r model-two, cache = T}
+```{r model-two}
 model2 <- glm(formula = target ~ . -indus -chas -rm -lstat,
               family = binomial(link = "logit"),
               data = crime.training)
@@ -212,7 +212,7 @@ summary(model2)
 ```
 
 ### 3.2.1 Model 2 Interpretation
-```{r mod-two-coeff, cache = T}
+```{r mod-two-coeff}
 m2coef <- round(model2$coefficients[-1], 4)
 m2e <- c("More large homes would indicate a wealthier neighbourhood (unless zn is referring to apartment buildings)", "Higher pollution could be due to industry or a poorly-funded area, both of which attract crime", "Older units are more likely to be occupied by lower-income residents, and lower-income neighbourhoods are more likely to have crime", "Neighbourhoods farther away from employment centers have higher crime, possibly due to unemployment", "Access to highways might indicate a more urban neighbourhood, which tend to have higher crime", "This one is unclear. Higher tax rate could be due to size of unit, or overall high tax rate for that area", "Higher ratio is more likely in poorly-funded districts, which tend to have higher crime", "Surprising that neighbourhoods with higher-valued homes had more crime")
 kable(cbind(m2coef, m2e), format = "latex", booktabs = T, col.names = c("Coefficient", "Possible Reasoning")) %>%
@@ -233,36 +233,64 @@ anova(model2, test = "Chisq")
 This model has a smaller difference between deviances, but has a slightly lower AIC.
 
 ## 3.3 Model 3
-For the last model, we'll transform `zn` to a binary variable.
+For the last model, we'll transform `zn` to a binary variable, and remove `tax`.
 
-```{r transform-zn, cache = T}
-crime.training.copy <- crime.training[, -c(2, 3, 5, 11)]
+```{r transform-zn}
+crime.training.copy <- crime.training[, -c(2, 3, 5, 9, 11)]
 crime.training.copy$zn <- ifelse(crime.training.copy$zn == "0", 0, 1) %>%
   as.factor()
 ```
 
-```{r model-three, cache = T}
+```{r model-three}
 model3 <- glm(formula = target ~ .,
               family = binomial(link = "logit"),
               data = crime.training.copy)
 summary(model3)
 ```
 
-## 3.4 Comparison of Models
+# 4. Select Model
 ```{r models-anova}
 anova(model1, model2, model3, test = "Chisq")
 ```
 The anova test tells us that there's good reason to use model two instead of the others.
 
-Interestingly, the third model is slightly worse than the second, even with the modified variables. Since model two has a higher difference between deviances, as well as lower AIC and BIC scores, I'll be using it as my prediction model.
+Interestingly, the third model is the worst of the three, even with the modified variables.
 
 To aid in model selection, I'll split training data into two partitions, use all three models to make predictions, and evaluate each based on several criteria.
+
+Using the following formulas:
+
+\begin{equation}
+Accuracy = \frac{TP + TN}{TP + TN + FP + FN}
+\end{equation}
+
+\begin{equation}
+Classification \ Error \ Rate = \frac{FP + FN}{TP + TN + FP + FN}
+\end{equation}
+
+\begin{equation}
+Precision = \frac{TP}{TP + FP}
+\end{equation}
+
+\begin{equation}
+Sensitivity = \frac{TP}{TP + FN}
+\end{equation}
+
+\begin{equation}
+Specificity = \frac{TN}{TN + FP}
+\end{equation}
+
+\begin{equation}
+F1 \ Score = \frac{2\cdot Precision \cdot Sensitivity}{Precision + Sensitivity}
+\end{equation}
+
+We'll compare the results of all three models.
 
 ```{r split-data}
 crime.split <- createDataPartition(y = crime.training$target, p = 0.7, list = F)
 
-ntrain1 <- crime.training[crime.split]
-ntest1 <- crime.training[-crime.split]
+ntrain1 <- crime.training[crime.split, ]
+ntest1 <- crime.training[-crime.split, ]
 ```
 
 ```{r test-model-one}
@@ -270,17 +298,280 @@ tm1 <- glm(target ~ .,
            family = binomial(link = "logit"),
            data = ntrain1)
 
-tm1_p <- predict(object = tm1, newdata = ntest1, type = "response")
-tm1_p <- ifelse(tm1_p > 0.5,1,0)
+tm1_prob <- predict(object = tm1, newdata = ntest1, type = "response")
+tm1_p <- ifelse(tm1_prob > 0.5,1,0)
+m1df <- data.frame(ntest1$target, tm1_p, tm1_prob, row.names = NULL)
+names(m1df) <- c("Actual", "Predicted", "Probability")
 ```
 
+```{r test-model-two}
+ntrain2 <- crime.training[crime.split, -c(2, 3, 5, 11)]
+ntest2 <- crime.training[-crime.split, -c(2, 3, 5, 11)]
+
+tm2 <- glm(target ~ .,
+           family = binomial(link = "logit"),
+           data = ntrain2)
+
+tm2_prob <- predict(object = tm2, newdata = ntest2, type = "response")
+tm2_p <- ifelse(tm2_prob > 0.5,1,0)
+m2df <- data.frame(ntest2$target, tm2_p, tm2_prob, row.names = NULL)
+names(m2df) <- c("Actual", "Predicted", "Probability")
+```
+
+```{r test-model-three}
+ntrain3 <- crime.training.copy[crime.split, -c(2, 3, 5, 9, 11)]
+ntest3 <- crime.training.copy[-crime.split, -c(2, 3, 5, 9, 11)]
+
+tm3 <- glm(target ~ .,
+           family = binomial(link = "logit"),
+           data = ntrain3)
+
+tm3_prob <- predict(object = tm3, newdata = ntest3, type = "response")
+tm3_p <- ifelse(tm3_prob > 0.5,1,0)
+m3df <- data.frame(ntest3$target, tm3_p, tm3_prob, row.names = NULL)
+names(m3df) <- c("Actual", "Predicted", "Probability")
+```
+
+```{r metrics}
+pred_acc <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  TN <- tab[1]
+  FP <- tab[3]
+  FN <- tab[2]
+  
+  acc <- (TP + TN) / (TP + TN + FP + FN)
+  
+  return(acc)
+}
+
+pred_err <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  TN <- tab[1]
+  FP <- tab[3]
+  FN <- tab[2]
+  
+  err <- (FP + FN) / (TP + TN + FP + FN)
+  
+  return(err)
+}
+
+pred_prec <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  FP <- tab[3]
+  
+  prec <- (TP) / (TP + FP)
+  
+  return(prec)
+}
+
+pred_sens <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  FN <- tab[2]
+  
+  sens <- (TP) / (TP + FN)
+  
+  return(sens)
+}
+
+pred_spec <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TN <- tab[1]
+  FP <- tab[3]
+  
+  spec <- (TN) / (TN + FP)
+  
+  return(spec)
+}
+
+pred_f1 <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  TN <- tab[1]
+  FP <- tab[3]
+  FN <- tab[2]
+  
+  prec <- (TP) / (TP + FP)
+  sens <- (TP) / (TP + FN)
+  
+  F1 <- (2*prec*sens)/(prec+sens)
+  
+  return(F1)
+}
+```
+
+```{r roc-formula}
+roc_curve <- function(dataset){
+  
+  thrshld <- seq(from = 0, to = 1, by = 0.01)
+  
+  # Sum totals of positives and negatives in the true column
+  P <- sum(dataset$Actual == 1)
+  N <- sum(dataset$Actual == 0)
+  
+  # Ensure there's at least one of each classifier 
+  stopifnot(P > 0, N > 0) 
+  
+  dataset <- arrange(dataset, desc(Probability))
+  
+  # Initialize TPR, FPR, and temporary threshold vectors
+  tpr <- c()
+  fpr <- c()
+  tt <- integer(nrow(dataset))
+  
+  for (i in 1:length(thrshld)){
+    
+    tt <- ifelse(dataset$Probability > thrshld[i], 1, 0)
+    
+    # Calculate Sensitivity and Specificity
+    TP <- sum(dataset$Actual == 1 & tt == 1)
+    TN <- sum(dataset$Actual == 0 & tt == 0)
+    FP <- sum(dataset$Actual == 0 & tt == 1)
+    FN <- sum(dataset$Actual == 1 & tt == 0)
+
+    sens <- (TP) / (P)
+    spec <- (TN) / (N)
+  
+    tpr[i] <- sens
+    fpr[i] <- 1 - spec
+  }
+  # Store results in a dataframe
+  df <- data.frame(fpr, tpr)
+  
+  # Calculate the area under the ROC curve
+  dfpr <- c(diff(df$fpr), 0)
+  dtpr <- c(diff(df$tpr), 0)
+  roc_auc <- abs(sum(tpr * dfpr) + sum(dtpr * dfpr)/2)
+  
+  # Store variable for roc curve plot
+  roc_curve_plot <- ggplot(df, aes(x = fpr, y = tpr, ymin = 0, ymax = tpr, xmin = 0, xmax = 1)) +
+    geom_abline(intercept = 0, slope = 1) +
+    geom_point() +
+    geom_line() +
+    geom_ribbon(alpha = 0.2) +
+    labs(title=paste0("ROC Curve w/ AUC=", roc_auc), x = "False Positive Rate (1 - Specificity)", y = "True Positive Rate (Sensitivity)") +
+    annotate("text", x = 0.5, y = 0.375, label = paste("AUC = ", round(roc_auc, 4)))
+  
+  roc_curve <- list(roc_curve_plot, roc_auc)
+  return(roc_curve)
+}
+```
+
+```{r results-table, eval = T}
+set.seed(212)
+c1 <- c(model1$aic, BIC(model1), model1$null.deviance - model1$deviance, pred_acc(m1df), pred_err(m1df), pred_prec(m1df), pred_sens(m1df), pred_spec(m1df), pred_f1(m1df), roc_curve(m1df)[[2]])
+
+c2 <- c(model2$aic, BIC(model2), model2$null.deviance - model2$deviance, pred_acc(m2df), pred_err(m2df), pred_prec(m2df), pred_sens(m2df), pred_spec(m2df), pred_f1(m2df), roc_curve(m2df)[[2]])
+
+c3 <- c(model3$aic, BIC(model3), model3$null.deviance - model3$deviance, pred_acc(m3df), pred_err(m3df), pred_prec(m3df), pred_sens(m3df), pred_spec(m3df), pred_f1(m3df), roc_curve(m3df)[[2]])
+
+rnames <- c("AIC", "BIC", "Deviance Diff", "Accuracy", "Error Rate", "Precision", "Sensitivity", "Specificity", "F1 Score", "AUC")
+```
+
+```{r metrics-table}
+rounded <- mapply(function(x) round(x, 4), c(c1, c2, c3))
+
+kable(cbind(rnames, rounded[1:10], rounded[11:20], rounded[21:30]), format = "latex", booktabs = T, col.names = c("Metric", "Model 1", "Model 2", "Model 3")) %>%
+   kable_styling(latex_options = c("striped"))
+```
+
+Roc Curve for Model 1
+```{r roc-plot-1}
+roc_curve(m1df)[1]
+```
+
+Roc Curve for Model 2
+```{r roc-plot-2}
+roc_curve(m2df)[1]
+```
+
+Roc Curve for Model 3
+```{r roc-plot-3}
+roc_curve(m3df)[1]
+```
+
+Surprisingly, model 1 and model 2 are very close, with each performing better in different categories (model 3 is not even close). However, I will pick model 2 as my final choice, due to the possibly overfitting of model 1 as a result of wrongly coded variables, as well as collinearity between some of the predictors.
+
+Let's now use model 2 to predict on a new set of data.
+
+```{r predict-new-data}
+set.seed(220)
+
+eval <- crime[, -c(2, 3, 5, 11)]
+model <- glm(formula = target ~ ., family = binomial(link = "logit"), 
+    data = crime.training[, -c(2, 3, 5, 11)])
+eval$Probability <- predict(object = model, newdata = eval, type = "response")
+eval$Predicted <- ifelse(eval$Probability > 0.5,1,0)
+
+kable(eval, format = "latex", booktabs = T) %>%
+   kable_styling(latex_options = c("striped"))
+```
 
 # References
 - http://userwww.sfsu.edu/efc/classes/biol710/logistic/logisticreg.htm
 - https://www.hackerearth.com/practice/machine-learning/machine-learning-algorithms/logistic-regression-analysis-r/tutorial/
 - https://stats.stackexchange.com/questions/59879/logistic-regression-anova-chi-square-test-vs-significance-of-coefficients-ano
-
-
-
-
-
+- https://www.machinelearningplus.com/machine-learning/logistic-regression-tutorial-examples-r/

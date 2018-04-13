@@ -269,7 +269,9 @@ are.
 As mentioned before, we'll consider removing two variables for one of
 our models. \texttt{chas}, due to it's low correlation with any of the
 other variables, and either \texttt{rad} or \texttt{tax}, due to high
-collinearity between the two.
+collinearity between the two. Since \texttt{rad} has a higher
+correlation with the \texttt{target} variable tham \texttt{tax} does,
+we'll drop the latter from one of our models.
 
 Other than the variables mentioned above, I don't see any reason to
 remove any variables. Furthermore, there isn't enough implicit
@@ -522,7 +524,8 @@ slightly lower AIC.
 
 \subsection{3.3 Model 3}\label{model-3}
 
-For the last model, we'll transform \texttt{zn} to a binary variable.
+For the last model, we'll transform \texttt{zn} to a binary variable,
+and remove \texttt{tax}.
 
 \begin{verbatim}
 ## 
@@ -532,32 +535,203 @@ For the last model, we'll transform \texttt{zn} to a binary variable.
 ## 
 ## Deviance Residuals: 
 ##     Min       1Q   Median       3Q      Max  
-## -1.8321  -0.1891  -0.0112   0.0030   3.5349  
+## -1.8183  -0.2692  -0.0246   0.0056   3.5957  
 ## 
 ## Coefficients:
-##               Estimate Std. Error z value Pr(>|z|)    
-## (Intercept) -37.511394   5.986257  -6.266 3.70e-10 ***
-## zn1          -1.718763   0.734165  -2.341  0.01923 *  
-## nox          43.985459   6.683768   6.581 4.67e-11 ***
-## age           0.034869   0.011108   3.139  0.00169 ** 
-## dis           0.704363   0.215670   3.266  0.00109 ** 
-## rad           0.719840   0.146091   4.927 8.34e-07 ***
-## tax          -0.007773   0.002607  -2.981  0.00287 ** 
-## ptratio       0.283659   0.117259   2.419  0.01556 *  
-## medv          0.108308   0.035554   3.046  0.00232 ** 
+##              Estimate Std. Error z value Pr(>|z|)    
+## (Intercept) -36.12048    5.64824  -6.395 1.61e-10 ***
+## zn1          -1.92296    0.72029  -2.670  0.00759 ** 
+## nox          39.09282    6.18533   6.320 2.61e-10 ***
+## age           0.03325    0.01079   3.083  0.00205 ** 
+## dis           0.79502    0.20878   3.808  0.00014 ***
+## rad           0.54136    0.12349   4.384 1.17e-05 ***
+## ptratio       0.21768    0.11254   1.934  0.05308 .  
+## medv          0.13494    0.03385   3.986 6.72e-05 ***
 ## ---
 ## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
 ## 
 ## (Dispersion parameter for binomial family taken to be 1)
 ## 
 ##     Null deviance: 645.88  on 465  degrees of freedom
-## Residual deviance: 197.45  on 457  degrees of freedom
-## AIC: 215.45
+## Residual deviance: 208.21  on 458  degrees of freedom
+## AIC: 224.21
 ## 
-## Number of Fisher Scoring iterations: 9
+## Number of Fisher Scoring iterations: 8
 \end{verbatim}
 
-\subsubsection{3.4 Comparison of Models}\label{comparison-of-models}
+\section{4. Select Model}\label{select-model}
+
+\begin{verbatim}
+## Analysis of Deviance Table
+## 
+## Model 1: target ~ zn + indus + chas + nox + rm + age + dis + rad + tax + 
+##     ptratio + lstat + medv
+## Model 2: target ~ (zn + indus + chas + nox + rm + age + dis + rad + tax + 
+##     ptratio + lstat + medv) - indus - chas - rm - lstat
+## Model 3: target ~ zn + nox + age + dis + rad + ptratio + medv
+##   Resid. Df Resid. Dev Df Deviance  Pr(>Chi)    
+## 1       453     192.05                          
+## 2       457     197.32 -4  -5.2759 0.2601382    
+## 3       458     208.21 -1 -10.8836 0.0009702 ***
+## ---
+## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+\end{verbatim}
+
+The anova test tells us that there's good reason to use model two
+instead of the others.
+
+Interestingly, the third model is the worst of the three, even with the
+modified variables.
+
+To aid in model selection, I'll split training data into two partitions,
+use all three models to make predictions, and evaluate each based on
+several criteria.
+
+Using the following formulas:
+
+\begin{equation}
+Accuracy = \frac{TP + TN}{TP + TN + FP + FN}
+\end{equation}
+
+\begin{equation}
+Classification \ Error \ Rate = \frac{FP + FN}{TP + TN + FP + FN}
+\end{equation}
+
+\begin{equation}
+Precision = \frac{TP}{TP + FP}
+\end{equation}
+
+\begin{equation}
+Sensitivity = \frac{TP}{TP + FN}
+\end{equation}
+
+\begin{equation}
+Specificity = \frac{TN}{TN + FP}
+\end{equation}
+
+\begin{equation}
+F1 \ Score = \frac{2\cdot Precision \cdot Sensitivity}{Precision + Sensitivity}
+\end{equation}
+
+We'll compare the results of all three models.
+
+\begin{table}[H]
+\centering\rowcolors{2}{gray!6}{white}
+
+\begin{tabular}{llll}
+\hiderowcolors
+\toprule
+Metric & Model 1 & Model 2 & Model 3\\
+\midrule
+\showrowcolors
+AIC & 218.0469 & 215.3229 & 224.2064\\
+BIC & 271.9213 & 252.6205 & 257.3599\\
+Deviance Diff & 453.8289 & 448.553 & 437.6694\\
+Accuracy & 0.8921 & 0.8849 & 0.7986\\
+Error Rate & 0.1079 & 0.1151 & 0.2014\\
+\addlinespace
+Precision & 0.8841 & 0.8939 & 0.803\\
+Sensitivity & 0.8971 & 0.8676 & 0.7794\\
+Specificity & 0.8873 & 0.9014 & 0.8169\\
+F1 Score & 0.8905 & 0.8806 & 0.791\\
+AUC & 0.9734 & 0.9702 & 0.9008\\
+\bottomrule
+\end{tabular}
+\rowcolors{2}{white}{white}
+\end{table}
+
+Roc Curve for Model 1
+
+\begin{verbatim}
+## [[1]]
+\end{verbatim}
+
+\includegraphics{DATA_621_Homework_3_files/figure-latex/roc-plot-1-1.pdf}
+
+Roc Curve for Model 2
+
+\begin{verbatim}
+## [[1]]
+\end{verbatim}
+
+\includegraphics{DATA_621_Homework_3_files/figure-latex/roc-plot-2-1.pdf}
+
+Roc Curve for Model 3
+
+\begin{verbatim}
+## [[1]]
+\end{verbatim}
+
+\includegraphics{DATA_621_Homework_3_files/figure-latex/roc-plot-3-1.pdf}
+
+Surprisingly, model 1 and model 2 are very close, with each performing
+better in different categories (model 3 is not even close). However, I
+will pick model 2 as my final choice, due to the possibly overfitting of
+model 1 as a result of wrongly coded variables, as well as collinearity
+between some of the predictors.
+
+Let's now use model 2 to predict on a new set of data.
+
+\begin{table}[H]
+\centering\rowcolors{2}{gray!6}{white}
+
+\begin{tabular}{rrrrrrrrrr}
+\hiderowcolors
+\toprule
+zn & nox & age & dis & rad & tax & ptratio & medv & Probability & Predicted\\
+\midrule
+\showrowcolors
+0 & 0.469 & 61.1 & 4.9671 & 2 & 242 & 17.8 & 34.7 & 0.0518733 & 0\\
+0 & 0.538 & 84.5 & 4.4619 & 4 & 307 & 21.0 & 18.2 & 0.6563639 & 1\\
+0 & 0.538 & 94.4 & 4.4547 & 4 & 307 & 21.0 & 18.4 & 0.7292303 & 1\\
+0 & 0.538 & 82.0 & 3.9900 & 4 & 307 & 21.0 & 13.2 & 0.4263767 & 0\\
+0 & 0.499 & 41.5 & 3.9342 & 5 & 279 & 19.2 & 21.0 & 0.1075746 & 0\\
+\addlinespace
+25 & 0.453 & 66.2 & 7.2254 & 8 & 284 & 19.7 & 18.7 & 0.3126897 & 0\\
+25 & 0.453 & 93.4 & 6.8185 & 8 & 284 & 19.7 & 16.0 & 0.3879178 & 0\\
+0 & 0.449 & 56.1 & 4.4377 & 3 & 247 & 18.5 & 26.6 & 0.0139910 & 0\\
+0 & 0.449 & 56.8 & 3.7476 & 3 & 247 & 18.5 & 22.2 & 0.0056513 & 0\\
+0 & 0.445 & 69.6 & 3.4952 & 2 & 276 & 18.0 & 21.4 & 0.0018602 & 0\\
+\addlinespace
+0 & 0.581 & 97.0 & 1.9444 & 2 & 188 & 19.1 & 17.3 & 0.5023729 & 1\\
+0 & 0.581 & 95.6 & 1.7572 & 2 & 188 & 19.1 & 15.7 & 0.4167837 & 0\\
+0 & 0.624 & 94.7 & 1.9799 & 4 & 437 & 21.2 & 14.3 & 0.8408851 & 1\\
+0 & 0.605 & 93.0 & 2.2834 & 5 & 403 & 14.7 & 25.0 & 0.7429792 & 1\\
+0 & 0.605 & 97.3 & 2.3887 & 5 & 403 & 14.7 & 19.1 & 0.6503036 & 1\\
+\addlinespace
+0 & 0.489 & 92.1 & 3.8771 & 4 & 277 & 18.6 & 21.7 & 0.1492647 & 0\\
+0 & 0.504 & 21.4 & 3.3751 & 8 & 307 & 17.4 & 31.5 & 0.4026110 & 0\\
+0 & 0.507 & 70.4 & 3.6519 & 8 & 307 & 17.4 & 48.3 & 0.9672516 & 1\\
+22 & 0.431 & 6.8 & 8.9067 & 7 & 330 & 19.1 & 29.6 & 0.0793284 & 0\\
+90 & 0.400 & 20.8 & 7.3073 & 1 & 285 & 15.3 & 32.2 & 0.0000009 & 0\\
+\addlinespace
+80 & 0.385 & 31.5 & 9.0892 & 1 & 241 & 18.2 & 20.1 & 0.0000038 & 0\\
+33 & 0.472 & 58.1 & 3.3700 & 7 & 222 & 18.4 & 28.4 & 0.0517318 & 0\\
+0 & 0.544 & 52.8 & 2.6403 & 4 & 304 & 18.4 & 22.1 & 0.1517637 & 0\\
+0 & 0.493 & 40.1 & 4.7211 & 5 & 287 & 19.6 & 25.0 & 0.1987527 & 0\\
+0 & 0.493 & 28.9 & 5.4159 & 5 & 287 & 19.6 & 23.0 & 0.1781289 & 0\\
+\addlinespace
+0 & 0.515 & 59.6 & 5.6150 & 5 & 224 & 20.2 & 18.5 & 0.6770735 & 1\\
+80 & 0.435 & 29.7 & 8.3440 & 4 & 280 & 17.0 & 24.5 & 0.0001355 & 0\\
+0 & 0.718 & 87.9 & 1.6132 & 24 & 666 & 20.2 & 27.5 & 1.0000000 & 1\\
+0 & 0.631 & 97.5 & 1.2024 & 24 & 666 & 20.2 & 50.0 & 1.0000000 & 1\\
+0 & 0.584 & 86.1 & 2.0527 & 24 & 666 & 20.2 & 14.5 & 0.9999947 & 1\\
+\addlinespace
+0 & 0.740 & 87.9 & 1.8206 & 24 & 666 & 20.2 & 8.4 & 1.0000000 & 1\\
+0 & 0.740 & 93.9 & 1.8172 & 24 & 666 & 20.2 & 12.8 & 1.0000000 & 1\\
+0 & 0.740 & 92.4 & 1.8662 & 24 & 666 & 20.2 & 10.5 & 1.0000000 & 1\\
+0 & 0.740 & 100.0 & 2.0048 & 24 & 666 & 20.2 & 18.4 & 1.0000000 & 1\\
+0 & 0.740 & 96.6 & 1.8956 & 24 & 666 & 20.2 & 10.8 & 1.0000000 & 1\\
+\addlinespace
+0 & 0.713 & 86.5 & 2.4358 & 24 & 666 & 20.2 & 14.1 & 1.0000000 & 1\\
+0 & 0.713 & 88.4 & 2.5671 & 24 & 666 & 20.2 & 17.7 & 1.0000000 & 1\\
+0 & 0.655 & 65.4 & 2.9634 & 24 & 666 & 20.2 & 21.4 & 0.9999999 & 1\\
+0 & 0.585 & 70.6 & 2.8927 & 6 & 391 & 19.2 & 18.3 & 0.8022854 & 1\\
+0 & 0.573 & 91.0 & 2.1675 & 1 & 273 & 21.0 & 23.9 & 0.3953354 & 0\\
+\bottomrule
+\end{tabular}
+\rowcolors{2}{white}{white}
+\end{table}
 
 \section{References}\label{references}
 
@@ -569,6 +743,8 @@ For the last model, we'll transform \texttt{zn} to a binary variable.
   \url{https://www.hackerearth.com/practice/machine-learning/machine-learning-algorithms/logistic-regression-analysis-r/tutorial/}
 \item
   \url{https://stats.stackexchange.com/questions/59879/logistic-regression-anova-chi-square-test-vs-significance-of-coefficients-ano}
+\item
+  \url{https://www.machinelearningplus.com/machine-learning/logistic-regression-tutorial-examples-r/}
 \end{itemize}
 
 
