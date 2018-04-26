@@ -1,0 +1,813 @@
+---
+title: "DATA 621 - Discussion 11"
+author: "Joshua Sturm"
+date: "04/19/2018"
+output:
+  github_document:
+  html_document:
+    highlight: textmate
+    theme: sandstone
+    code_folding: show
+    toc: yes
+    toc_float: yes
+    smart: yes
+  pdf_document:
+    keep_tex: yes
+always_allow_html: yes
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, collapse = T, cache = T)
+```
+
+# Objective
+Your objective is to build multiple linear regression and binary logistic regression models on the training data
+to predict the probability that a person will crash their car and also the amount of money it will cost if the person
+does crash their car. You can only use the variables given to you (or variables that you derive from the variables
+provided).
+
+# 1. Data Exploration
+
+```{r load-libraries}
+library(tidyverse)
+library(knitr)
+library(corrplot)
+library(kableExtra)
+library(gridExtra)
+library(missForest)
+library(doParallel)
+library(gvlma)
+```
+
+## 1.1 Import Dataset
+```{r import-dataset}
+# Local
+ins.training <- read.csv("./data/insurance_training_data.csv", na.strings = "")
+ins.evaluation <- read.csv("./data/insurance-evaluation-data.csv", na.strings = "")
+
+# Remote
+# ins.training <- read.csv("https://github.com/JoshuaSturm/DATA_621/blob/master/Homework%204/data/insurance_training_data.csv", na.strings = "")
+# ins.evaluation <- read.csv("https://github.com/JoshuaSturm/DATA_621/blob/master/Homework%204/data/insurance-evaluation-data.csv", na.strings = "")
+```
+
+### 1.1.1 Data Dictionary
+```{r data-dictionary}
+defs <- c("Identification Variable (do not use)",
+          "Was Car in a crash? 1=YES 0=NO",
+          "If car was in a crash, what was the cost",
+          "Age of Driver",
+          "Value of Vehicle",
+          "Vehicle Age",
+          "Type of Car",
+          "Vehicle Use",
+          "# Claims (Past 5 Years)",
+          "Max Education Level",
+          "Home Value",
+          "# Children at Home",
+          "Income",
+          "Job Category",
+          "# Driving Children",
+          "Marital Status",
+          "Motor Vehicle Record Points",
+          "Total Claims (Past 5 Years)",
+          "Single Parent",
+          "A Red Car",
+          "License Revoked (Past 7 Years)",
+          "Gender",
+          "Time in Force",
+          "Distance to Work",
+          "Home/Work Area",
+          "Years on Job"
+          )
+
+efs <- c("None",
+         "None",
+         "None",
+         "Very young people tend to be risky. Maybe very old people also",
+         "Unknown effect on probability of collision, but probably effect the payout if there is a crash",
+         "Unknown effect on probability of collision, but probably effect the payout if there is a crash",
+         "Unknown effect on probability of collision, but probably effect the payout if there is a crash",
+         "Commercial vehicles are driven more, so might increase probability of collision",
+         "The more claims you filed in the past, the more you are likely to file in the future",
+         "Unknown effect, but in theory more educated people tend to drive more safely",
+         "In theory, home owners tend to drive more responsibly",
+         "Unknown effect",
+         "In theory, rich people tend to get into fewer crashes",
+         "In theory, white collar jobs tend to be safer",
+         "When teenagers drive your car, you are more likely to get into crashes",
+         "In theory, married people drive more safely",
+         "If you get lots of traffic tickets, you tend to get into more crashes",
+         "If your total payout over the past five years was high, this suggests future payouts will be high",
+         "Unknown effect",
+         "Urban legend says that red cars (especially red sports cars) are more risky. Is that true?",
+         "If your license was revoked in the past 7 years, you probably are a more risky driver.",
+         "Urban legend says that women have less crashes then men. Is that true?",
+         "People who have been customers for a long time are usually more safe",
+         "Long drives to work usually suggest greater risk",
+         "Unknown",
+         "People who stay at a job for a long time are usually more safe"
+         )
+
+# Rearrange columns to match order of data dictionary
+ins.training <- ins.training[, c(names(ins.training)[1:3], sort(names(ins.training)[4:26]))] 
+ins.evaluation <- ins.evaluation[, c(names(ins.evaluation)[1:3], sort(names(ins.evaluation)[4:26]))] 
+
+ins.dict <- data.frame(names(ins.training), defs, efs, stringsAsFactors = F)
+names(ins.dict) <- c("Variable Name", "Definition", "Theoretical Effect")
+
+kable(ins.dict, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down"))
+```
+
+## 1.2 Data Structure
+```{r data-structure}
+kable(psych::describe(ins.training), format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down"))
+```
+
+The dataset has `r ncol(ins.training) - 3` predictor variables, and `r nrow(ins.training)` cases. Each case represents a automotive insurance policy holder. We have a sufficiently large sample size to perform regression analysis on the data.
+
+### 1.2.1 Missing Data
+```{r missing-data}
+mapply(function(x) sum(is.na(x)), ins.training)
+```
+
+There are several variables that have missing data: `age`, `yoj`, `income`, `home_val`, `job`, and `car_age`.
+When looking at the data dictionary for the defintions of these variables, it seems that each of these variables are independent of each other. For example, some cases have `yoj` missing, but may have values for `job` or `income`. This leads me to believe that the missing data is missing at random. Therefore, I will not remove these cases, but instead try to use some form of imputation.
+
+```{r glimpse-data}
+glimpse(ins.training)
+```
+
+At this point, I usually plot some graphs to better understand the data, but this dataset is somewhat "dirty", and requires tidying before visualizing it. For this reason, I will include the graphs after cleaning, which will be done in section 2.
+
+# 2. Data Preparation
+As can be seen above, the `$` character is causing R to classify what should be numeric columns as characters (and thus factors). I'll remove all instances of the `$` character, as well as the unnecessary "z_" found in man variables, through the use of regular expressions. 
+
+## 2.1 Remove Extraneous Characters
+```{r remove-extra-characters}
+# Remove $, z_, and commas in numbers
+ins.training[] %<>%
+  lapply(str_replace_all, pattern = "\\$", replacement = "") %>%
+  lapply(str_replace_all, pattern = "z_", replacement = "") %>%
+  lapply(str_replace_all, pattern = ",", replacement = "") %>%
+  lapply(str_replace_all, "<", "No ")
+
+# Repeat process for evaluation data
+ins.evaluation[] %<>%
+  lapply(str_replace_all, pattern = "\\$", replacement = "") %>%
+  lapply(str_replace_all, pattern = "z_", replacement = "") %>%
+  lapply(str_replace_all, pattern = ",", replacement = "") %>%
+  lapply(str_replace_all, "<", "No ")
+```
+
+## 2.2 Rename Values
+```{r}
+ins.training$URBANICITY <- ifelse(ins.training$URBANICITY == "Highly Urban/ Urban", "Urban", "Rural")
+
+ins.evaluation$URBANICITY <- ifelse(ins.evaluation$URBANICITY == "Highly Urban/ Urban", "Urban", "Rural")
+```
+
+## 2.3 Recode Variables
+```{r recode-variables}
+ins.training[, c(1, 2, 7:10, 12, 14:17, 19:22, 25)] <- mutate_all(ins.training[, c(1, 2, 7:10, 12, 14:17, 19:22, 25)], funs(as.factor))
+
+ins.training[, c(3:6, 11, 13, 18, 23:24, 26)] <- mutate_all(ins.training[, c(3:6, 11, 13, 18, 23:24, 26)], funs(as.numeric))
+
+# Repeat for evaluation data
+ins.evaluation[, c(1, 2, 7:10, 12, 14:17, 19:22, 25)] <- mutate_all(ins.evaluation[, c(1, 2, 7:10, 12, 14:17, 19:22, 25)], funs(as.factor))
+
+ins.evaluation[, c(3:6, 11, 13, 18, 23:24, 26)] <- mutate_all(ins.evaluation[, c(3:6, 11, 13, 18, 23:24, 26)], funs(as.numeric))
+```
+
+## 2.4 Data Visualizations
+
+### 2.4.1 Boxplot
+```{r summary-boxplot}
+ins.bp1 <- ins.training %>%
+  select(c(4, 6, 23, 24, 26)) %>%
+  gather()
+
+summary.boxplot1 <- ggplot(ins.bp1, aes(x = key, y = value)) +
+  labs(x = "variable", title = "Insurance Data Boxplot") +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 1)
+
+summary.boxplot1
+
+# 
+ins.bp2 <- ins.training %>%
+  select(c(3, 5, 11, 13, 18)) %>%
+  gather()
+
+summary.boxplot2 <- ggplot(ins.bp2, aes(x = key, y = value)) +
+  labs(x = "variable", title = "Insurance Data Boxplot") +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 1)
+
+summary.boxplot2
+```
+
+### 2.4.2 Histogram
+```{r summary-histogram}
+ins.h <- ins.training %>%
+  select(c(4:6, 11, 13, 18, 23:24, 26)) %>%
+  gather()
+
+ins.hist <- ggplot(data = ins.h, mapping = aes(x = value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~key, scales = 'free_x')
+
+ins.hist
+```
+
+From the boxplot and histogram charts, it is much clearer that several variables are (usally positively) skewed.
+
+`Age`, `TIF`, `TRAVTIME`, `YOJ`, `HOME_VAL`, `INCOME`, and `OLDCLAIM` all have outliers, and are thus strongly skewed.
+
+### 2.4.3 Bar Chart
+
+```{r summary-bar}
+ins.b <- ins.training %>%
+  select(c(7:10, 12, 14:17, 19:22, 25)) %>%
+  gather()
+
+ins.bar <- ggplot(data = ins.b, mapping = aes(x = value)) + 
+  geom_bar() + 
+  facet_wrap(~key, scales = 'free_x')
+
+ins.bar
+```
+
+### 2.5 Correlation
+
+#### 2.5.1 Correlation Heatmap
+```{r summary-correlation-heatmap}
+ins.c <- mutate_all(ins.training, funs(as.numeric)) %>%
+  na.omit(.)
+corrplot(cor(ins.c), method = "color", type = "lower")
+```
+
+#### 2.5.2 Correlation (with dependent) tables
+```{r summary-correlation-tables}
+# TARGET_FLAG
+corp1 <- apply(ins.c[, -c(1:3)], 2, function(x) cor.test(x, y=ins.c$TARGET_FLAG)$p.value)
+cortable1 <- cor(ins.c[, -c(1:3)], ins.c$TARGET_FLAG)
+#TARGET_AMT
+corp2 <- apply(ins.c[, -c(1:3)], 2, function(x) cor.test(x, y=ins.c$TARGET_AMT)$p.value)
+cortable2 <- cor(ins.c[, -c(1:3)], ins.c$TARGET_AMT)
+
+lt1 <- cbind(as.character(corp1), cortable1)
+lt2 <- cbind(as.character(corp2), cortable2)
+colnames(lt1) <- c("P-Value", "Correlation With Response")
+colnames(lt2) <- c("P-Value", "Correlation With Response")
+
+kable(cbind(lt1,lt2), format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down")) %>%
+  add_header_above(c(" ", "TARGET_FLAG" = 2, "TARGET_AMT" = 2))
+```
+
+From the correlation chart and tables, there don't seem to be any variables correlated one or another with either response variable. However, there do appear to be several variables related to one another, although not to the point of extreme collinearity.
+
+`OLDCLAIM` and `CLM_FREQ` have a pearson correlation of `r cor(ins.c$OLDCLAIM, ins.c$CLM_FREQ)`. This makes sense, since `OLDCLAIM` will only have a value if `CLM_FREQ` $\neq 0$.
+
+`INCOME` and `HOME_VAL` have a pearson correlation of `r cor(ins.c$INCOME, ins.c$HOME_VAL)`, which is reasonable - a person with a higher salary can afford a more expensive home, or a home in a more expensive location.
+
+Other correlated variables include:
+- `RED_CAR` and `SEX`
+- `PARENT1` and `HOMEKIDS`
+- `MSTATUS` and `HOME_VAL`
+
+### 2.6 Handling Missing Data
+As noted earlier in [Section 1.2.1][1.2.1 Missing Data], there are several variables with a significant number of missing cases. I'll break it down by variable, and explain how I will imputate each.
+
+#### 2.6.1 AGE
+Each policy holder obviously has an age, and it's most likely required to be given to the insurer, so this is most likely an error in recording the data. Since there are so few missing cases, and the variable is nearly normal, I will impute using the median.
+
+```{r impute-age}
+ins.training$CAR_AGE[ins.training$CAR_AGE == -3] <- abs(-3)
+insz <- ins.training[, -1]
+insrf <- ins.training[, -1]
+
+
+insz$AGE[is.na(insz$AGE)] <- median(insz$AGE, na.rm = T)
+
+insrf$AGE[is.na(insrf$AGE)] <- median(insrf$AGE, na.rm = T)
+```
+
+#### 2.6.2 CAR_AGE
+Much like the policy holder, ever car also has an age. Since there are so many missing cases, imputation will be done together with the other variables via a non-parametric random forest method.
+
+#### 2.6.3 HOME_VAL
+There are `r summary(ins.training$HOME_VAL)[[7]]` NA's for this variable. This could be due to recording errors, or possibly they're equivalent to a 0, meaning the policy holder doesn't own the home in which they're living. I'll try two different methods: one where the NA's are converted to a 0, and one imputed via random forest.
+
+#### 2.6.4 INCOME
+This variable has `r summary(ins.training$INCOME)[[7]]` missing cases. Since credit history is an important factor in insurance premiums, it's likely that income is required to be declared when creating a new policy. Therefore, like the other variables, the missing cases could either be due to recording errors, or simply meant to indicate the applicant had no income. Like `HOME_VAL`, I'll use two different methods to use in separate models.
+
+#### 2.6.5 JOB
+This variable could be missing cases due to the policy holder being unemployed, or didn't specify their job industry. Imputation will be handled by the random forest method.
+
+#### 2.6.6 YOJ
+There are fewer missing values for `YOJ` than `JOB`, but this could be explained by the number of 0 values for `YOJ`, which could possibly indicate unemployment. Data will be imputated along with the others via the random forest algorithm.
+
+```{r imputation-to-zero}
+insz$HOME_VAL[is.na(insz$HOME_VAL)] <- 0
+insz$INCOME[is.na(insz$INCOME)] <- 0
+```
+
+```{r imputation-random-forest}
+# cores = detectCores() - 1
+# registerDoParallel(cores = cores)
+# insrf1 <- missForest(xmis = insrf,
+#                      maxiter = 10,
+#                      ntree = 100,
+#                      variablewise = T,
+#                      verbose = T,
+#                      parallelize = "forests")
+
+# registerDoParallel(cores = cores)
+# insz <- missForest(xmis = insz,
+#                      maxiter = 10,
+#                      ntree = 100,
+#                      variablewise = T,
+#                      verbose = T,
+#                      parallelize = "forests")
+
+# Write results to csv as a backup
+# write.csv(insrf1$ximp, "imputedData.csv")
+# write.csv(insz$ximp, "zeroImputedData.csv")
+insrf <- read.csv("./data/imputedData.csv")
+insz <- read.csv("./data/zeroImputedData.csv")
+```
+
+The algorithm had an error rate of `r insrf$OOBerror[[1]]` for continuous variables, and `r insrf$OOBerror[[2]]` for categorical ones.
+
+### 2.7 Variable Transformation
+Some of the predictor variables are strongly skewed, and so it may make sense to either transform them in some way, or simply recode them as binary variables.
+
+#### 2.7.1 CAR_AGE
+Firstly, there is a negative value for one of the policy holders, which is obviously impossible, so I'll assume it was a typographical error, and use the absolute value, i.e. 3.
+
+Since the majority of cars are $\leq 1$ year old, I'll recode this to a binary named `NEW_CAR`, with any car $\geq 1 = 0$.
+
+```{r transform-carage}
+# insz$CAR_AGE <- ifelse(insz$CAR_AGE > 1, 0, 1)
+# colnames(insz)[colnames(insz) == "CAR_AGE"] <- "NEW_CAR"
+# 
+# insrf$CAR_AGE <- ifelse(insrf$CAR_AGE > 1, 0, 1)
+# colnames(insrf)[colnames(insrf) == "CAR_AGE"] <- "NEW_CAR"
+
+ins.evaluation$CAR_AGE <- ifelse(ins.evaluation$CAR_AGE > 1, 0, 1)
+colnames(ins.evaluation)[colnames(ins.evaluation) == "CAR_AGE"] <- "NEW_CAR"
+```
+
+#### 2.7.2 Remaining Variables
+The remaining variables with high outliers seem to have reasonable skew. That is to say, that they're most likely not mistakes in the data, just extreme cases. In light of this, I will choose to not remove them, as they may contain information I would not want to lose.
+
+# 3. Build Models
+
+## 3.1 Logistic model
+
+### 3.1.2 Logistic Model One
+For the first model, I will use the original dataset, with only the essential transformations, to use as a baseline with which to compare my other (modified) datasets.
+
+```{r log-model-one}
+logmodel1 <- glm(formula = TARGET_FLAG ~ . -INDEX -TARGET_AMT,
+              family = binomial(link = "logit"),
+              data = ins.training)
+summary(logmodel1)
+```
+
+#### 3.1.2.1 Logistic Model 1 Interpretation
+The model suggest there are many variables that are not significantly contributing toward predicting the target variable.
+
+The model has an AIC (Akaike information criterion) of `r round(logmodel1$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(logmodel1), 2)`.
+
+With a Null deviance of `r round(logmodel1$null.deviance, 2)`, and a Residual deviance of `r round(logmodel1$deviance, 2)`, we get a difference of `r round(logmodel1$null.deviance - logmodel1$deviance, 2)`.
+
+Lastly, let's run an ANOVA Chi-Square test to view the effect each predictor variable is having on the response variable.
+
+```{r anova-log-model-one}
+anova(logmodel1, test = "Chisq")
+```
+
+### 3.1.3 Logistic Model Two
+The second model will be using the dataset that was imputated with zeros.
+
+```{r log-model-two}
+insz <- insz %>%
+  select(-X)
+logmodel2 <- glm(formula = TARGET_FLAG ~ . -TARGET_AMT,
+              family = binomial(link = "logit"),
+              data = insz)
+summary(logmodel2)
+```
+
+#### 3.1.3.1 Logistic Model Two Interpretation
+This model performed worse than the original one!
+
+The model has an AIC (Akaike information criterion) of `r round(logmodel2$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(logmodel2), 2)`.
+
+With a Null deviance of `r round(logmodel2$null.deviance, 2)`, and a Residual deviance of `r round(logmodel2$deviance, 2)`, we get a difference of `r round(logmodel2$null.deviance - logmodel2$deviance, 2)`.
+
+Lastly, let's run an ANOVA Chi-Square test to view the effect each predictor variable is having on the response variable.
+
+```{r anova-log-model-two}
+anova(logmodel2, test = "Chisq")
+```
+
+### 3.1.4 Logistic Model Three
+For the third logistic model, I will use the dataset that was imputated via the non-parametric random forest algorithm.
+
+```{r log-model-three}
+logmodel3 <- glm(formula = TARGET_FLAG ~ . -TARGET_AMT,
+              family = binomial(link = "logit"),
+              data = insrf)
+summary(logmodel3)
+```
+
+#### 3.1.3.1 Logistic Model Three Interpretation
+This model performed worse than the original one!
+
+The model has an AIC (Akaike information criterion) of `r round(logmodel3$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(logmodel3), 2)`.
+
+With a Null deviance of `r round(logmodel3$null.deviance, 2)`, and a Residual deviance of `r round(logmodel3$deviance, 2)`, we get a difference of `r round(logmodel3$null.deviance - logmodel3$deviance, 2)`.
+
+Lastly, let's run an ANOVA Chi-Square test to view the effect each predictor variable is having on the response variable.
+
+```{r anova-log-model-three}
+anova(logmodel3, test = "Chisq")
+```
+
+### 3.1.4 Final Logistic Model
+Due to the lower AIC, BIC, and deviance values, I will use the second logistic model for predicting.
+Note, however, that none of these models are optimal. From the plots of model two, the residuals are not nearly normal. This very well could be due to the skewness introduced by the presence of outliers in the dataset.
+
+## 3.2 Linear Model
+I will follow the same format used to build my logistic models for my linear models.
+
+### 3.2.1 Linear Model One
+```{r linear-model-one}
+lmodel1 <- lm(formula = TARGET_AMT ~ . -INDEX -TARGET_FLAG,
+         data = ins.training)
+summary(lmodel1)
+gvlma(lmodel1)
+```
+
+### 3.2.2 Linear Model Two
+```{r linear-model-two}
+lmodel2 <- lm(formula = TARGET_AMT ~ . -TARGET_FLAG,
+         data = insz)
+summary(lmodel2)
+gvlma(lmodel2)
+```
+
+### 3.2.3 Linear Model Three
+```{r linear-model-three}
+lmodel3 <- lm(formula = TARGET_AMT ~ . -TARGET_FLAG,
+         data = insrf)
+summary(lmodel3)
+gvlma(lmodel3)
+```
+
+### 3.2.4 Final Linear Model
+Much like the logistical models, the linear ones are plagued by outliers skewing the data, resulting in non-linear residuals. Consequently, it wouldn't be practical to use these in real examples without handling them in some fashion, e.g. transformations (sqrt, log, box-cox, IQR cutoff). To illustrate this, I will remove the most significant outliers from the third model, as indicated in the plots. I will not use this test model, though, since I only removed specific cases, so the "transformation" was not uniform throughout the dataset.
+
+```{r test-linear-model}
+summary(lm(formula = TARGET_AMT ~ . -TARGET_FLAG,
+         data = insrf[-c(7072, 5389, 7691, 7780), ])
+)
+```
+
+Just by removing the four extreme outliers from the model, our adjusted r-squared improved by $\approx 13\%$!
+
+```{r lmodel-two-plots}
+
+rp1 <- ggplot(lmodel2, aes(.fitted, .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_smooth(se = FALSE) +
+  labs(title = "Residuals vs Fitted")
+
+rp2 <- ggplot(lmodel2, aes(.fitted, .stdresid)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_smooth(se = FALSE)
+
+rp3 <- ggplot(lmodel2) +
+  stat_qq(aes(sample = .stdresid)) +
+  geom_abline()
+
+rp4 <- ggplot(lmodel2, aes(.fitted, sqrt(abs(.stdresid)))) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  labs(title = "Scale-Location")
+
+rp5 <- ggplot(lmodel2, aes(seq_along(.cooksd), .cooksd)) +
+  geom_col() +
+  ylim(0, 0.0075) +
+  labs(title = "Cook's Distance")
+
+rp6 <- ggplot(lmodel2, aes(.hat, .stdresid)) +
+  geom_point(aes(size = .cooksd)) +
+  geom_smooth(se = FALSE, size = 0.5) +
+  labs(title = "Residuals vs Leverage")
+
+rp7 <- ggplot(lmodel2, aes(.hat, .cooksd)) +
+  geom_vline(xintercept = 0, colour = NA) +
+  geom_abline(slope = seq(0, 3, by = 0.5), colour = "white") +
+  geom_smooth(se = FALSE) +
+  geom_point() +
+  labs(title = "Cook's distance vs Leverage")
+
+rp8 <- ggplot(lmodel2, aes(.resid)) +
+  geom_histogram(bins = 7, color="darkblue", fill="steelblue")
+
+grid.arrange(rp1, rp2, rp3, rp4, rp5, rp6, rp7, rp8, ncol = 2)
+```
+
+# 4. Model Selection and Prediction
+As noted in [section 3.2.4][3.2.4 Final Linear Model], I will be using the second logistic, and second linear models for predictions on the evaluation set.
+
+## 4.1 Transform Evaluation Set
+Before I proceed, I need to transform the evaluation dataset using the same methods used for the second model.
+```{r transform-evaluation}
+# ins.evaluation$AGE[is.na(ins.evaluation$AGE)] <- median(ins.evaluation$AGE, na.rm = T)
+# ins.evaluation$HOME_VAL[is.na(ins.evaluation$HOME_VAL)] <- 0
+# ins.evaluation$INCOME[is.na(ins.evaluation$INCOME)] <- 0
+# ins.evaluation <- ins.evaluation[, -1]
+# cores = detectCores() - 1
+# 
+# registerDoParallel(cores = cores)
+# ins.eval1 <- missForest(xmis = ins.evaluation,
+#                         maxiter = 10,
+#                         ntree = 100,
+#                         variablewise = T,
+#                         verbose = T,
+#                         parallelize = "forests")
+# write.csv(ins.eval1$ximp, "./data/evalImputed.csv")
+inse <- read.csv("./data/evalImputed.csv")
+```
+
+## 4.2 Split Data
+```{r split-data}
+set.seed(22)
+
+# Split data into training and testing partitions
+train <- insz %>%
+  sample_frac(., size = 0.7, replace = F)
+test <- anti_join(insz, train)
+```
+
+## 4.3 Logistic Prediction
+```{r log-pred}
+logpred <- glm(TARGET_FLAG ~ . -TARGET_AMT,
+           family = binomial(link = "logit"),
+           data = train)
+
+log_prob <- predict(object = logpred, newdata = test, type = "response")
+log_p <- ifelse(log_prob > 0.5,1,0)
+logpdf <- data.frame(test$TARGET_FLAG, log_p, log_prob, row.names = NULL)
+names(logpdf) <- c("Actual", "Predicted", "Probability")
+```
+
+```{r metrics}
+pred_acc <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  TN <- tab[1]
+  FP <- tab[3]
+  FN <- tab[2]
+  
+  acc <- (TP + TN) / (TP + TN + FP + FN)
+  
+  return(acc)
+}
+
+pred_err <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  TN <- tab[1]
+  FP <- tab[3]
+  FN <- tab[2]
+  
+  err <- (FP + FN) / (TP + TN + FP + FN)
+  
+  return(err)
+}
+
+pred_prec <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  FP <- tab[3]
+  
+  prec <- (TP) / (TP + FP)
+  
+  return(prec)
+}
+
+pred_sens <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  FN <- tab[2]
+  
+  sens <- (TP) / (TP + FN)
+  
+  return(sens)
+}
+
+pred_spec <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TN <- tab[1]
+  FP <- tab[3]
+  
+  spec <- (TN) / (TN + FP)
+  
+  return(spec)
+}
+
+pred_f1 <- function(dataset){
+  # Check if entered dataset is a dataframe; if not, cooerce it to one
+  if (!(is.data.frame(dataset))){
+    dataset <- as.data.frame(dataset)
+  }
+  
+  # Ensure dataframe is not empty
+  if (is_empty(dataset)){
+    stop("You've entered an empty dataset!")
+  }
+  
+  tab <- table(dataset$Actual, dataset$Predicted)
+  TP <- tab[4]
+  TN <- tab[1]
+  FP <- tab[3]
+  FN <- tab[2]
+  
+  prec <- (TP) / (TP + FP)
+  sens <- (TP) / (TP + FN)
+  
+  F1 <- (2*prec*sens)/(prec+sens)
+  
+  return(F1)
+}
+```
+
+```{r roc-formula}
+roc_curve <- function(dataset){
+  
+  thrshld <- seq(from = 0, to = 1, by = 0.01)
+  
+  # Sum totals of positives and negatives in the true column
+  P <- sum(dataset$Actual == 1)
+  N <- sum(dataset$Actual == 0)
+  
+  # Ensure there's at least one of each classifier 
+  stopifnot(P > 0, N > 0) 
+  
+  dataset <- arrange(dataset, desc(Probability))
+  
+  # Initialize TPR, FPR, and temporary threshold vectors
+  tpr <- c()
+  fpr <- c()
+  tt <- integer(nrow(dataset))
+  
+  for (i in 1:length(thrshld)){
+    
+    tt <- ifelse(dataset$Probability > thrshld[i], 1, 0)
+    
+    # Calculate Sensitivity and Specificity
+    TP <- sum(dataset$Actual == 1 & tt == 1)
+    TN <- sum(dataset$Actual == 0 & tt == 0)
+    FP <- sum(dataset$Actual == 0 & tt == 1)
+    FN <- sum(dataset$Actual == 1 & tt == 0)
+
+    sens <- (TP) / (P)
+    spec <- (TN) / (N)
+  
+    tpr[i] <- sens
+    fpr[i] <- 1 - spec
+  }
+  # Store results in a dataframe
+  df <- data.frame(fpr, tpr)
+  
+  # Calculate the area under the ROC curve
+  dfpr <- c(diff(df$fpr), 0)
+  dtpr <- c(diff(df$tpr), 0)
+  roc_auc <- abs(sum(tpr * dfpr) + sum(dtpr * dfpr)/2)
+  
+  # Store variable for roc curve plot
+  roc_curve_plot <- ggplot(df, aes(x = fpr, y = tpr, ymin = 0, ymax = tpr, xmin = 0, xmax = 1)) +
+    geom_abline(intercept = 0, slope = 1) +
+    geom_point() +
+    geom_line() +
+    geom_ribbon(alpha = 0.2) +
+    labs(title=paste0("ROC Curve w/ AUC=", roc_auc), x = "False Positive Rate (1 - Specificity)", y = "True Positive Rate (Sensitivity)") +
+    annotate("text", x = 0.5, y = 0.375, label = paste("AUC = ", round(roc_auc, 4)))
+  
+  roc_curve <- list(roc_curve_plot, roc_auc)
+  return(roc_curve)
+}
+```
+
+```{r log-pred-results}
+logpredr <- c(logpred$aic, BIC(logpred), logpred$null.deviance - logpred$deviance, pred_acc(logpdf), pred_err(logpdf), pred_prec(logpdf), pred_sens(logpdf), pred_spec(logpdf), pred_f1(logpdf), roc_curve(logpdf)[[2]])
+
+rnames <- c("AIC", "BIC", "Deviance Diff", "Accuracy", "Error Rate", "Precision", "Sensitivity", "Specificity", "F1 Score", "AUC")
+
+kable(cbind(rnames, round(logpredr, 4)), format = "latex", booktabs = T, col.names = c("Metric", "Model Results")) %>%
+   kable_styling(latex_options = c("striped"))
+```
+
+## 4.4 Linear Prediction
+```{r}
+linpred <- lm(formula = TARGET_AMT ~ . -TARGET_FLAG,
+              data = train)
+
+lin_prob <- predict(object = linpred, newdata = test, type = "response")
+
+lresults.df <- data.frame(cbind(actuals = test$TARGET_AMT, predicted = lin_prob))
+
+lresults.df <- lresults.df %>%
+  mutate(error = lresults.df$actuals - lresults.df$predicted) %>%
+  round(., 2)
+lresults.df <- lresults.df %>%
+  mutate(percerror = paste0(round(lresults.df$error/lresults.df$actuals*100,2),"%"))
+
+kable(head(lresults.df))
+```
+
+As was expected the linear model performs horribly, since it didn't meet any of the assumptions needed for regression.
+
+## 4.5 Predicting on Evaluation Dataset
+
+```{r linear-prediction-split}
+inse %<>%
+  mutate(TARGET_AMT = 0, TARGET_FLAG = 0) %>%
+  try(select(-X), T)
+
+elim <- predict(object = lmodel2,
+                         newdata = inse,
+                         type = "response")
+
+elom <- predict(object = logmodel2,
+                          newdata = inse,
+                          type = "response")
+
+eldf <- data.frame(Predicted_FLAG_prob = elom, Predicted_AMT = elim) %>%
+  mutate(Predicted_Flag = ifelse(Predicted_FLAG_prob > 0.5,1,0))
+head(eldf)
+```
+
+# 5. Closing Remarks
+Once again, the model is predicting an amount, even when the predicted probability of an accident occuring is very low. Another problem is it's even predicting negative amounts, which is obviously impossible!
+
+As mentioned earlier, this dataset would require serious examination to be used in production. I didn't want to remove the outliers, since I believed they weren't errors in the data, but rather just extreme cases. In retrospect, it seems I should have used some method to handle those cases, e.g. capping by a multiple of the IQR. Those cases were so far from the mean and median, that they were skewing any possible information that could have been derived from the majority of the observations.
