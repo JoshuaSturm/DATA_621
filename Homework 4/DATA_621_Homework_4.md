@@ -19,7 +19,7 @@ Your objective is to build multiple linear regression and binary logistic regres
 1.2 Data Structure
 ------------------
 
-The dataset has 23 predictor variables, and 8161 cases. Each case represents a automotive insurance policy holder. We have a sufficiently large sample size to perform regression analysis on the data.
+The dataset has 23 predictor variables, and 8161 cases. Each case represents an automotive insurance policy holder. We have a sufficiently large sample size to perform regression analysis on the data.
 
 ### 1.2.1 Missing Data
 
