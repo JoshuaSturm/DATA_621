@@ -126,7 +126,7 @@ kable(psych::describe(ins.training), format = "latex", booktabs = T) %>%
   kable_styling(latex_options = c("striped", "scale_down"))
 ```
 
-The dataset has `r ncol(ins.training) - 3` predictor variables, and `r nrow(ins.training)` cases. Each case represents a automotive insurance policy holder. We have a sufficiently large sample size to perform regression analysis on the data.
+The dataset has `r ncol(ins.training) - 3` predictor variables, and `r nrow(ins.training)` cases. Each case represents an automotive insurance policy holder. We have a sufficiently large sample size to perform regression analysis on the data.
 
 ### 1.2.1 Missing Data
 ```{r missing-data}
