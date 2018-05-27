@@ -1,0 +1,286 @@
+---
+title: "DATA 621 - Homework 5"
+author: "Joshua Sturm"
+date: "May 13, 2018"
+output:
+  pdf_document:
+    keep_tex: yes
+  html_document:
+    highlight: textmate
+    theme: sandstone
+    code_folding: show
+    toc: yes
+    toc_float: yes
+    smart: yes
+  github_document:
+always_allow_html: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, collapse = T, cache = T)
+options(scipen = 3, digits = 6)
+setwd("~/GitHub/DATA_621/Homework 5")
+```
+
+# Objective
+Your objective is to build a count regression model to predict the number of cases of wine that will be sold
+given certain properties of the wine. HINT: Sometimes, the fact that a variable is missing is actually predictive of
+the target. You can only use the variables given to you (or variables that you derive from the variables provided).
+
+# 1. Data Exploration
+
+```{r load-libraries}
+library(MASS)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(corrplot)
+library(kableExtra)
+library(Hmisc)
+library(pscl)
+```
+
+## 1.1 Import Dataset
+```{r import-dataset}
+wine.t <- read_csv("./data/wine-training-data.csv", na = "", col_types = cols(INDEX = col_skip()))
+wine.e <- read_csv("./data/wine-evaluation-data.csv", na= "", col_types = cols(INDEX = col_skip()))
+```
+
+### 1.1.1 Data Dictionary
+```{r data-dictionary}
+defs <- c("Number of Cases Purchased",
+          "Proprietary method of testing total acidity of wine by using a weighted average",
+          "Alcohol Content",
+          "Chloride content of wine",
+          "Citric Acid Content",
+          "Density of Wine",
+          "Fixed Acidity of Wine",
+          "Sulfur Dioxide content of wine",
+          "Marketing Score indicating the appeal of label design for consumers. High numbers suggest customers like the label design. Negative numbers suggest customers don't like the design",
+          "pH of wine",
+          "Residual Sugar of wine",
+          "Wine rating by a team of experts. 4 Stars = Excellent, 1 Star = Poor",
+          "Sulfate conten of wine",
+          "Total Sulfur Dioxide of Wine",
+          "Volatile Acid content of wine"
+          )
+
+wine.t <- wine.t[, c(names(wine.t)[1], sort(names(wine.t)[2:15]))]
+wine.e <- wine.e[, c(names(wine.e)[1], sort(names(wine.e)[2:15]))]
+
+wine.dict <- data.frame(names(wine.t), defs)
+names(wine.dict) <- c("Variable Name", "Definition")
+
+kable(wine.dict, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down"))
+```
+
+## 1.2 Data Structure
+```{r data-structure}
+kable(psych::describe(wine.t), format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "scale_down"))
+```
+
+The wine training dataset has `r ncol(wine.t) - 1` predictor variables, and `r nrow(wine.t)` cases. Each case represents a commercially available brand of wine. We have a sufficiently large sample size to perform (count) regression analysis on the data.
+
+### 1.2.1 Missing Data
+```{r missing-data}
+colSums(is.na(wine.t))
+```
+
+The training dataset is missing `r sum(is.na(wine.t))` data points, with the bulk coming from `STARS` and `Sulphates`.
+
+```{r glimpse-data}
+glimpse(wine.t)
+```
+
+## 1.3 Summary Graphs
+
+### 1.3.1 Boxplots
+```{r summary-boxplot}
+wine.bp <- wine.t %>%
+  select(-TARGET) %>%
+  gather()
+
+ggplot(wine.bp, aes(x = key, y = value)) +
+  labs(x = "variable", title = "Wine Data Training Boxplot") +
+  geom_boxplot(outlier.colour = "red", outlier.shape = 1) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+It's interesting to note that the outliers are nearly symmetrical for every variable. This would suggest that the data is nearly normally distributed.
+
+### 1.3.2 Histograms
+```{r summary-histogram}
+ggplot(data = wine.bp, mapping = aes(x = value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~key, scales = 'free_x')
+```
+
+The histograms confirm that the data is nearly normal.
+
+### 1.3.3 Correlation
+
+#### 1.3.3.1 Correlation Heatmap
+```{r summary-correlation-heatmap}
+wine.c <- mutate_all(wine.t, funs(as.numeric)) %>%
+  na.omit(.)
+corrplot(cor(wine.c), method = "color", type = "lower")
+```
+
+#### 1.3.3.2 Correlation (with response) table
+
+```{r summary-correlation-table}
+corp <- apply(wine.t, 2, function(x) cor.test(x, y=wine.t$TARGET)$p.value)
+cortable <- cor(wine.t, wine.t$TARGET, use = "complete.obs")
+kable(cbind(as.character(corp), cortable), format = "latex", booktabs = T, col.names = c("P-value", "Correlation with response")) %>%
+  kable_styling(latex_options = c("striped"))
+```
+
+`STARS` and `LabelAppeal` are the most significantly correlated with the response variable. I find it amusing that the superficial aspects have a bigger impact on sales than the actual qualities of the wine.
+
+# 2. Data Preparation
+
+## 2.1 Missing Values
+As noted earlier in [Section 1.2.1][1.2.1 Missing Data], there are several variables with a significant number of missing cases. The `STARS` variable has the most missing cases. Based on the definition found in the data dictionary, the number indicates the quality rated by a panel of experts. Luckily, there are no 0 scores, so I'll convert this variable to an ordered factor, with the missing cases taking on a value of 0. The remaining variables with missing cases will be imputated using the `Hmisc` package.
+
+## 2.2 Negative Values
+Going by the definitions found in the data dictionary, most, if not all, variables cannot possibly take on negative values. However, since the dataset is nearly normal, it's unlikely that it's due to an entry error. Without knowing how the data was recorded and entered, I will not be altering any of the negative values in the dataset, and will proceed to build the models using them as is.
+
+```{r recode-variables}
+# Create copies to use for different models
+winet2 <- wine.t
+winee2 <- wine.e
+
+winet2$STARS[is.na(winet2$STARS)] <- 0
+winee2$STARS[is.na(winee2$STARS)] <- 0
+
+# Copied training
+winet2$AcidIndex <- factor(winet2$AcidIndex, levels = c(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17))
+winet2$LabelAppeal <- factor(winet2$LabelAppeal, levels = c(-2, -1, 0, 1, 2))
+winet2$STARS <- factor(winet2$STARS, levels = c(0, 1, 2, 3, 4))
+
+
+# Copied Evaluation
+winee2$AcidIndex <- factor(winee2$AcidIndex, levels = c(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17))
+winee2$LabelAppeal <- factor(winee2$LabelAppeal, levels = c(-2, -1, 0, 1, 2))
+winee2$STARS <- factor(winee2$STARS, levels = c(0, 1, 2, 3, 4))
+```
+
+```{r forest-imputation}
+trainingimpute <- aregImpute(formula = ~Alcohol + Chlorides + FreeSulfurDioxide + pH + ResidualSugar +
+                       Sulphates + TotalSulfurDioxide, data = winet2, n.impute = 5, pr = F)
+
+evalimpute <- aregImpute(formula = ~Alcohol + Chlorides + FreeSulfurDioxide + pH + ResidualSugar +
+                       Sulphates + TotalSulfurDioxide, data = winee2, n.impute = 5, pr = F)
+```
+
+```{r extract-data}
+imputed.training <- winet2
+imputed <- impute.transcan(trainingimpute, imputation=1, data=winet2, list.out=TRUE, pr=FALSE, check=FALSE)
+imputed.training[names(imputed)] <- imputed
+
+imputed.eval <- winee2
+imputed <- impute.transcan(evalimpute, imputation=1, data=winee2, list.out=TRUE, pr=FALSE, check=FALSE)
+imputed.eval[names(imputed)] <- imputed
+```
+
+# 3. Build Models
+In each case, I will build two models - one using the raw dataset, the other using our transformed one.
+
+## 3.1 Poisson Model 1
+```{r poisson-one}
+pm1 <- glm(TARGET ~ ., data = wine.t, family = "poisson")
+summary(pm1)
+
+# RMSE Function Adapted from
+# https://stackoverflow.com/a/44167388/8877639
+RMSE <- function(error) { sqrt(mean(error^2)) }
+
+paste0("RMSE = ", RMSE(pm1$residuals))
+```
+
+### 3.1.1 Poisson Model 1 Interpretation
+The model suggest there are many variables that are not significantly contributing toward predicting the target variable.
+
+The model has an AIC (Akaike information criterion) of `r round(pm1$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(pm1), 2)`.
+
+With a Null deviance of `r round(pm1$null.deviance, 2)`, and a Residual deviance of `r round(pm1$deviance, 2)`, we get a difference of `r round(pm1$null.deviance - pm1$deviance, 2)`.
+
+## 3.2 Poisson Model 2
+```{r poisson-two}
+pm2 <- glm(TARGET ~ ., data = imputed.training, family = "poisson")
+summary(pm2)
+paste0("RMSE = ", RMSE(pm2$residuals))
+```
+
+### 3.2.1 Poisson Model 2 Interpretation
+This model has an AIC (Akaike information criterion) of `r round(pm2$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(pm2), 2)`.
+
+With a Null deviance of `r round(pm2$null.deviance, 2)`, and a Residual deviance of `r round(pm2$deviance, 2)`, we get a difference of `r round(pm2$null.deviance - pm2$deviance, 2)`.
+
+## 3.3 Poisson Results
+Interestingly, the model using the raw dataset outperformed the modified one. Nevertheless, the model results are subpar, and neither should be used in production.
+
+## 3.4 Negative Binomial Model 1
+```{r nb-model-one}
+nb1 <- glm.nb(formula = TARGET ~ ., data = wine.t)
+summary(nb1)
+paste0("RMSE = ", RMSE(nb1$residuals))
+```
+
+### 3.4.1 NB Model 1 Interpretation
+The model has an AIC (Akaike information criterion) of `r round(nb1$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(nb1), 2)`.
+
+With a Null deviance of `r round(nb1$null.deviance, 2)`, and a Residual deviance of `r round(nb1$deviance, 2)`, we get a difference of `r round(nb1$null.deviance - nb1$deviance, 2)`.
+
+## 3.5 Negative Binomial Model 2
+```{r nb-model-two}
+nb2 <- glm.nb(formula = TARGET ~ ., data = imputed.training)
+summary(nb2)
+paste0("RMSE = ", RMSE(nb2$residuals))
+```
+
+### 3.5.1 NB Model 2 Interpretation
+The model has an AIC (Akaike information criterion) of `r round(nb2$aic, 2)`, and a BIC (Bayesian information criterion) of `r round(BIC(nb2), 2)`.
+
+With a Null deviance of `r round(nb2$null.deviance, 2)`, and a Residual deviance of `r round(nb2$deviance, 2)`, we get a difference of `r round(nb2$null.deviance - nb2$deviance, 2)`.
+
+```{r zinfl-nb}
+zinb <- zeroinfl(TARGET ~ ., data = imputed.training, dist = "negbin")
+summary(zinb)
+
+paste0("RMSE = ", RMSE(zinb$residuals))
+```
+
+## 3.6 Negative Binomial Results
+Both these models performed nearly identically to the Poisson models. However, the zero-inflated negative binomial out-performed both.
+
+## 3.7 Linear Model 1
+```{r lm-one}
+lm1 <- lm(TARGET ~ ., data = wine.t)
+summary(lm1)
+```
+
+## 3.8 Linear Model 2
+```{r lm-two}
+lm2 <- lm(TARGET ~ ., data = imputed.training)
+summary(lm2)
+```
+
+# 4. Model Selection and Prediction
+The linear models were the only scenario where the modified dataset outperformed the raw one. The second linear model was the best performed out of all 7 models, with the zero-inflated negative binomial coming in second. I will be using the zinb to make predictions on the evaluation dataset.
+
+Below is a sample of the prediction results.
+```{r predictions}
+pred <- predict(zinb, newdata = imputed.eval, type = "response")
+
+pdf <- data.frame(ID = 1:NROW(pred), Predicted = pred)
+
+head(pdf, 10)
+
+rm(cortable, evalimpute, imputed, lm1, lm2, pm1, pm2, pm3, trainingimpute, wine.bp, wine.c, winee2, winet2)
+gc()
+```
